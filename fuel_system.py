@@ -14,8 +14,8 @@ import time
 from threading import Thread
 import json
 import os
-import datetime
-from datetime import datetime
+#import datetime
+#from datetime import datetime
 
 # Company name
 COMPANY_NAME = "Jet Refuels"
