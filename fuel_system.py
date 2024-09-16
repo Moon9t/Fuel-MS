@@ -9,6 +9,7 @@ import PySimpleGUI as sg
 import threading
 import matplotlib.pyplot as plt
 from io import BytesIO
+from PIL import Image
 
 # Company name
 COMPANY_NAME = "Jet Refuels"
@@ -35,6 +36,9 @@ def setup_database():
                       (id INTEGER PRIMARY KEY, employee_id INTEGER, fuel_type_id INTEGER,
                        amount DECIMAL(10, 2), liters DECIMAL(10, 2), timestamp DATETIME)''')
     
+    cursor.execute('''CREATE TABLE IF NOT EXISTS admins
+                      (id INTEGER PRIMARY KEY, username TEXT, password TEXT)''')
+    
     # Insert example employees
     cursor.execute("INSERT OR IGNORE INTO employees (id, name, password) VALUES (?, ?, ?)",
                    (123456, "Pluto", hashlib.sha256("pluto_pass".encode()).hexdigest()))
@@ -51,15 +55,31 @@ def setup_database():
     cursor.execute("INSERT OR IGNORE INTO fuel_types (name, price, stock) VALUES (?, ?, ?)",
                    ("Diesel", 17.50, 10000))
 
+    # Insert example admin
+    cursor.execute("INSERT OR IGNORE INTO admins (username, password) VALUES (?, ?)",
+                   ("admin", hashlib.sha256("admin_pass".encode()).hexdigest()))
+
     conn.commit()
     conn.close()
-
 
 def authenticate_user(employee_id, password):
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
     
     cursor.execute("SELECT password FROM employees WHERE id = ?", (employee_id,))
+    result = cursor.fetchone()
+    
+    conn.close()
+    
+    if result and result[0] == hashlib.sha256(password.encode()).hexdigest():
+        return True
+    return False
+
+def authenticate_admin(username, password):
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT password FROM admins WHERE username = ?", (username,))
     result = cursor.fetchone()
     
     conn.close()
@@ -98,19 +118,42 @@ def get_fuel_types():
 def create_advanced_ui():
     sg.theme('DarkBlue13')
     
+    # Load and resize the logo
+    logo_path = "jet.png"
+    logo = Image.open(logo_path)
+    logo = logo.resize((150, 150))  # Adjust size as needed
+    
     fuel_types = get_fuel_types()
     
     layout = [
-        [sg.Text(f'Welcome to {COMPANY_NAME}', font=('Helvetica', 20))],
-        [sg.Text('Employee ID:'), sg.Input(key='-ID-')],
-        [sg.Text('Password:'), sg.Input(key='-PASSWORD-', password_char='*')],
-        [sg.Text('Select Fuel Type:')],
-        [sg.Radio(f'{fuel} - R{price:.2f}/liter', group_id='FUEL', key=f'-{fuel.upper()}-') for fuel, price in fuel_types.items()],
-        [sg.Text('Amount (Rands):'), sg.Input(key='-AMOUNT-')],
-        [sg.Button('Start Fueling'), sg.Button('View Reports'), sg.Button('Update Prices'), sg.Button('Exit')]
+        [sg.Image(data=logo.tobytes(), size=logo.size)],
+        [sg.Text(f'Welcome to {COMPANY_NAME}', font=('Helvetica', 24), pad=(0, 20))],
+        [sg.Text(f'Welcome to {COMPANY_NAME}', font=('Helvetica', 24), pad=(0, 20))],
+        [sg.Text('Employee ID:', size=(15, 1)), sg.Input(key='-ID-', size=(20, 1))],
+        [sg.Text('Password:', size=(15, 1)), sg.Input(key='-PASSWORD-', password_char='*', size=(20, 1))],
+        [sg.Text('Select Fuel Type:', font=('Helvetica', 14), pad=(0, 10))],
+        *[[sg.Radio(f'{fuel} - R{price:.2f}/liter', group_id='FUEL', key=f'-{fuel.upper()}-', font=('Helvetica', 12))] for fuel, price in fuel_types.items()],
+        [sg.Text('Amount (Rands):', size=(15, 1)), sg.Input(key='-AMOUNT-', size=(20, 1))],
+        [sg.Button('Start Fueling', size=(15, 1), button_color=('white', '#007BFF'), border_width=0),
+         sg.Button('View Reports', size=(15, 1), button_color=('white', '#28A745'), border_width=0),
+         sg.Button('Update Prices', size=(15, 1), button_color=('white', '#FFC107'), border_width=0),
+         sg.Button('Exit', size=(15, 1), button_color=('white', '#DC3545'), border_width=0)]
     ]
     
-    return sg.Window(COMPANY_NAME, layout, finalize=True)
+    return sg.Window(COMPANY_NAME, layout, finalize=True, element_justification='center', font=('Helvetica', 12), size=(600, 500))
+
+def create_admin_ui():
+    sg.theme('DarkBlue13')
+    
+    layout = [
+        [sg.Text('Admin Panel', font=('Helvetica', 24), pad=(0, 20))],
+        [sg.Button('Manage Employees', size=(20, 1), button_color=('white', '#007BFF'), border_width=0),
+         sg.Button('Manage Fuel Types', size=(20, 1), button_color=('white', '#28A745'), border_width=0)],
+        [sg.Button('View All Transactions', size=(20, 1), button_color=('white', '#FFC107'), border_width=0),
+         sg.Button('Exit', size=(20, 1), button_color=('white', '#DC3545'), border_width=0)]
+    ]
+    
+    return sg.Window('Admin Panel', layout, finalize=True, element_justification='center', font=('Helvetica', 12), size=(500, 300))
 
 def process_transaction(employee_id, fuel_type, amount):
     conn = sqlite3.connect(DATABASE_NAME)
@@ -140,7 +183,6 @@ def process_transaction(employee_id, fuel_type, amount):
     conn.close()
     
     return generate_invoice(employee_id, fuel_type, amount, total_liters), None
-
 
 def generate_invoice(employee_id, fuel_type, amount, liters):
     conn = sqlite3.connect(DATABASE_NAME)
@@ -196,8 +238,45 @@ def generate_reports():
     
     return f"Total Sales: R{total_sales:.2f}", buf
 
+def manage_employees():
+    # Implement employee management logic here
+    sg.popup("Employee management functionality not implemented yet.")
+
+def manage_fuel_types():
+    # Implement fuel type management logic here
+    sg.popup("Fuel type management functionality not implemented yet.")
+
+def view_all_transactions():
+    # Implement transaction viewing logic here
+    sg.popup("Transaction viewing functionality not implemented yet.")
+
 def main():
     setup_database()
+    
+    layout = [
+        [sg.Text('Select Login Type:', font=('Helvetica', 18), pad=(0, 20))],
+        [sg.Button('Employee Login', size=(15, 1), button_color=('white', '#007BFF'), border_width=0),
+         sg.Button('Admin Login', size=(15, 1), button_color=('white', '#28A745'), border_width=0)],
+        [sg.Button('Exit', size=(15, 1), button_color=('white', '#DC3545'), border_width=0)]
+    ]
+    
+    window = sg.Window('Login Selection', layout, finalize=True, element_justification='center', font=('Helvetica', 12), size=(400, 250))
+    
+    while True:
+        event, _ = window.read()
+        if event == sg.WINDOW_CLOSED or event == 'Exit':
+            break
+        elif event == 'Employee Login':
+            window.close()
+            employee_main()
+        elif event == 'Admin Login':
+            window.close()
+            admin_login()
+    
+    window.close()
+
+
+def employee_main():
     window = create_advanced_ui()
     
     while True:
@@ -205,34 +284,91 @@ def main():
         if event == sg.WINDOW_CLOSED or event == 'Exit':
             break
         elif event == 'Start Fueling':
-            employee_id = int(values['-ID-'])
+            employee_id = values['-ID-']
             password = values['-PASSWORD-']
+            amount = values['-AMOUNT-']
+            
+            if not employee_id or not password or not amount:
+                sg.popup('Please fill in all fields', font=('Helvetica', 12))
+                continue
+            
+            try:
+                employee_id = int(employee_id)
+                amount = Decimal(amount)
+            except ValueError:
+                sg.popup('Employee ID and Amount must be numeric', font=('Helvetica', 12))
+                continue
             
             if authenticate_user(employee_id, password):
                 fuel_type = next(fuel for fuel in get_fuel_types() if values[f'-{fuel.upper()}-'])
-                amount = Decimal(values['-AMOUNT-'])
                 
                 window.hide()
                 invoice, error = process_transaction(employee_id, fuel_type, amount)
                 if error:
-                    sg.popup_error(error)
+                    sg.popup_error(error, font=('Helvetica', 12))
                 else:
-                    sg.popup_scrolled(invoice, title='Transaction Complete')
+                    sg.popup_scrolled(invoice, title='Transaction Complete', font=('Helvetica', 12))
                 window.un_hide()
             else:
-                sg.popup('Authentication Failed')
+                sg.popup('Authentication Failed', font=('Helvetica', 12))
         elif event == 'View Reports':
             total_sales, chart_image = generate_reports()
-            sg.popup_scrolled(total_sales, image=chart_image.getvalue(), title='Sales Report')
+            sg.popup_scrolled(total_sales, image=chart_image.getvalue(), title='Sales Report', font=('Helvetica', 12))
         elif event == 'Update Prices':
             if update_fuel_prices():
                 window.close()
                 window = create_advanced_ui()
-                sg.popup('Fuel prices updated successfully')
+                sg.popup('Fuel prices updated successfully', font=('Helvetica', 12))
             else:
-                sg.popup_error('Failed to update fuel prices')
+                sg.popup_error('Failed to update fuel prices', font=('Helvetica', 12))
     
     window.close()
 
+def admin_login():
+    layout = [
+        [sg.Text('Admin Login', font=('Helvetica', 18), pad=(0, 20))],
+        [sg.Text('Username:', size=(10, 1)), sg.Input(key='-USERNAME-', size=(20, 1))],
+        [sg.Text('Password:', size=(10, 1)), sg.Input(key='-PASSWORD-', password_char='*', size=(20, 1))],
+        [sg.Button('Login', size=(10, 1), button_color=('white', '#007BFF'), border_width=0),
+         sg.Button('Exit', size=(10, 1), button_color=('white', '#DC3545'), border_width=0)],
+        [sg.Text('Example credentials: admin / admin_pass', font=('Helvetica', 10), pad=(0, 10))]
+    ]
+    
+    window = sg.Window('Admin Login', layout, finalize=True, element_justification='center', font=('Helvetica', 12), size=(400, 300))
+    
+    while True:
+        event, values = window.read()
+        if event == sg.WINDOW_CLOSED or event == 'Exit':
+            window.close()
+            main()
+            return
+        elif event == 'Login':
+            if authenticate_admin(values['-USERNAME-'], values['-PASSWORD-']):
+                window.close()
+                admin_main()
+                return
+            else:
+                sg.popup('Authentication Failed', font=('Helvetica', 12))
+    
+    window.close()
+
+def admin_main():
+    window = create_admin_ui()
+    
+    while True:
+        event, _ = window.read()
+        if event == sg.WINDOW_CLOSED or event == 'Exit':
+             break
+        elif event == 'Manage Employees':
+            manage_employees()
+        elif event == 'Manage Fuel Types':
+            manage_fuel_types()
+        elif event == 'View All Transactions':
+            view_all_transactions()
+    
+    window.close()
+    main()
+
 if __name__ == "__main__":
     main()
+            
