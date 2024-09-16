@@ -1,21 +1,29 @@
-import time
 import sqlite3
 import hashlib
-import requests
 from decimal import Decimal
 import datetime
-from tqdm import tqdm
 import PySimpleGUI as sg
-import threading
 import matplotlib.pyplot as plt
 from io import BytesIO
-from PIL import Image
+import matplotlib.pyplot as plt
+import csv
+import keyboard
+import requests
+import schedule
+import time
+from threading import Thread
+import json
+import os
+import datetime
+from datetime import datetime
 
 # Company name
 COMPANY_NAME = "Jet Refuels"
 
 # Database setup
 DATABASE_NAME = "fuel_system.db"
+
+CONFIG_FILE = 'fuel_prices.json'
 
 def adapt_datetime(dt):
     return dt.isoformat()
@@ -88,23 +96,46 @@ def authenticate_admin(username, password):
         return True
     return False
 
-def update_fuel_prices():
-    try:
-        prices = {"Regular": 16.80, "Premium": 19.20, "Diesel": 17.75}
-        
-        conn = sqlite3.connect(DATABASE_NAME)
-        cursor = conn.cursor()
-        
-        for fuel_type, price in prices.items():
-            cursor.execute("UPDATE fuel_types SET price = ? WHERE name = ?", (price, fuel_type))
-        
-        conn.commit()
-        conn.close()
-        return True
-    except:
-        print("Failed to update fuel prices. Using existing prices.")
-        return False
+def load_fuel_prices():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as file:
+            return json.load(file)
+    else:
+        return {"Regular": 16.80, "Premium": 19.20, "Diesel": 17.75}
 
+def save_fuel_prices(prices):
+    with open(CONFIG_FILE, 'w') as file:
+        json.dump(prices, file, indent=4)
+
+def  update_fuel_prices():
+    prices = load_fuel_prices()
+    
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    for fuel_type, price in prices.items():
+        cursor.execute("UPDATE fuel_types SET price = ? WHERE name = ?", (price, fuel_type))
+    
+    conn.commit()
+    conn.close()
+    print("Fuel prices updated successfully.")
+
+    # Call this function at program startup
+    #update_fuel_prices()
+
+def run_price_update_scheduler():
+    schedule.every(1).hour.do(update_fuel_prices)
+    
+    while True:
+        schedule.run_pending()
+        time.sleep(60)
+
+# Start the automatic price update scheduler in a separate thread
+price_update_thread = Thread(target=run_price_update_scheduler)
+price_update_thread.daemon = True
+price_update_thread.start()
+
+            
 def get_fuel_types():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
@@ -118,16 +149,9 @@ def get_fuel_types():
 def create_advanced_ui():
     sg.theme('DarkBlue13')
     
-    # Load and resize the logo
-    logo_path = "jet.png"
-    logo = Image.open(logo_path)
-    logo = logo.resize((150, 150))  # Adjust size as needed
-    
     fuel_types = get_fuel_types()
     
     layout = [
-        [sg.Image(data=logo.tobytes(), size=logo.size)],
-        [sg.Text(f'Welcome to {COMPANY_NAME}', font=('Helvetica', 24), pad=(0, 20))],
         [sg.Text(f'Welcome to {COMPANY_NAME}', font=('Helvetica', 24), pad=(0, 20))],
         [sg.Text('Employee ID:', size=(15, 1)), sg.Input(key='-ID-', size=(20, 1))],
         [sg.Text('Password:', size=(15, 1)), sg.Input(key='-PASSWORD-', password_char='*', size=(20, 1))],
@@ -135,18 +159,70 @@ def create_advanced_ui():
         *[[sg.Radio(f'{fuel} - R{price:.2f}/liter', group_id='FUEL', key=f'-{fuel.upper()}-', font=('Helvetica', 12))] for fuel, price in fuel_types.items()],
         [sg.Text('Amount (Rands):', size=(15, 1)), sg.Input(key='-AMOUNT-', size=(20, 1))],
         [sg.Button('Start Fueling', size=(15, 1), button_color=('white', '#007BFF'), border_width=0),
-         sg.Button('View Reports', size=(15, 1), button_color=('white', '#28A745'), border_width=0),
-         sg.Button('Update Prices', size=(15, 1), button_color=('white', '#FFC107'), border_width=0),
-         sg.Button('Exit', size=(15, 1), button_color=('white', '#DC3545'), border_width=0)]
+         sg.Button('Exit', size=(15, 1), button_color=('white', '#DC3545'), border_width=0)],
+        [sg.Text('', key='-STATUS-', size=(50, 1), font=('Helvetica', 12), text_color='yellow')]
     ]
     
-    return sg.Window(COMPANY_NAME, layout, finalize=True, element_justification='center', font=('Helvetica', 12), size=(600, 500))
+    return sg.Window(COMPANY_NAME, layout, finalize=True, element_justification='center', font=('Helvetica', 12), size=(600, 500), return_keyboard_events=True)
+
+def view_reports():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT ft.name, SUM(t.amount) as total_sales, SUM(t.liters) as total_liters
+        FROM transactions t
+        JOIN fuel_types ft ON t.fuel_type_id = ft.id
+        GROUP BY ft.name
+    """)
+    sales_data = cursor.fetchall()
+    
+    layout = [
+        [sg.Text("Sales Report", font=('Helvetica', 20))],
+        [sg.Table(values=sales_data, 
+                  headings=['Fuel Type', 'Total Sales', 'Total Liters'], 
+                  auto_size_columns=False, 
+                  col_widths=[15, 15, 15],
+                  justification='left',
+                  key='-TABLE-')],
+        [sg.Button("Generate Graph"), sg.Button("Close")]
+    ]
+    
+    window = sg.Window("Sales Report", layout, size=(500, 400))
+    
+    while True:
+        event, values = window.read()
+        if event in (sg.WINDOW_CLOSED, 'Close'):
+            break
+        elif event == "Generate Graph":
+            generate_sales_graph(sales_data)
+    
+    window.close()
+    conn.close()
+
+def generate_sales_graph(sales_data):
+    fuel_types = [row[0] for row in sales_data]
+    sales = [row[1] for row in sales_data]
+    
+    plt.figure(figsize=(10, 6))
+    plt.bar(fuel_types, sales)
+    plt.title('Sales by Fuel Type')
+    plt.xlabel('Fuel Type')
+    plt.ylabel('Total Sales')
+    plt.xticks(rotation=45)
+    
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    
+    layout = [[sg.Image(data=buf.getvalue())]]
+    window = sg.Window("Sales Graph", layout)
+    window.read(close=True)
 
 def create_admin_ui():
     sg.theme('DarkBlue13')
     
-    layout = [
-        [sg.Text('Admin Panel', font=('Helvetica', 24), pad=(0, 20))],
+    layout = [        [sg.Text('Admin Panel', font=('Helvetica', 24), pad=(0, 20))],
         [sg.Button('Manage Employees', size=(20, 1), button_color=('white', '#007BFF'), border_width=0),
          sg.Button('Manage Fuel Types', size=(20, 1), button_color=('white', '#28A745'), border_width=0)],
         [sg.Button('View All Transactions', size=(20, 1), button_color=('white', '#FFC107'), border_width=0),
@@ -170,19 +246,42 @@ def process_transaction(employee_id, fuel_type, amount):
         conn.close()
         return None, "Insufficient fuel stock"
     
-    for _ in tqdm(range(int(total_liters * 2)), desc="Fueling Progress"):
-        time.sleep(0.1)
+    pumped_liters = 0
+    layout = [[sg.Text('Press and hold Enter to pump fuel')],
+              [sg.ProgressBar(100, orientation='h', size=(20, 20), key='progressbar')]]
+    window = sg.Window('Fueling', layout, return_keyboard_events=True, finalize=True)
     
-    cursor.execute("UPDATE fuel_types SET stock = stock - ? WHERE name = ?", (float(total_liters), fuel_type))
+    total_liters = Decimal(amount) / fuel_price
+    pumped_liters = Decimal('0')
+
+    flow_rate = Decimal('0.5')  # liters per second
+    time_increment = Decimal('0.1')  # 0.1 seconds per loop
+    
+    while pumped_liters < total_liters:
+        event, values = window.read(timeout=100)
+        if event == sg.WINDOW_CLOSED:
+            break
+        if keyboard.is_pressed('enter'):
+            pumped_liters += flow_rate * time_increment
+            if pumped_liters > total_liters:
+                pumped_liters = total_liters
+            progress = int((pumped_liters / total_liters) * 100)
+            window['progressbar'].update(progress)
+        if pumped_liters >= total_liters:
+            break
+        
+    window.close()
+    
+    cursor.execute("UPDATE fuel_types SET stock = stock - ? WHERE name = ?", (float(pumped_liters), fuel_type))
     
     cursor.execute('''INSERT INTO transactions (employee_id, fuel_type_id, amount, liters, timestamp)
                       VALUES (?, (SELECT id FROM fuel_types WHERE name = ?), ?, ?, ?)''',
-                   (employee_id, fuel_type, float(amount), float(total_liters), datetime.datetime.now()))
+                   (employee_id, fuel_type, float(pumped_liters * fuel_price), float(pumped_liters), datetime.datetime.now()))
     
     conn.commit()
     conn.close()
     
-    return generate_invoice(employee_id, fuel_type, amount, total_liters), None
+    return generate_invoice(employee_id, fuel_type, pumped_liters * fuel_price, pumped_liters), None
 
 def generate_invoice(employee_id, fuel_type, amount, liters):
     conn = sqlite3.connect(DATABASE_NAME)
@@ -236,19 +335,307 @@ def generate_reports():
     
     conn.close()
     
-    return f"Total Sales: R{total_sales:.2f}", buf
+    return f"Total Sales: R{total_sales:.2f}", buf.getvalue()
 
 def manage_employees():
-    # Implement employee management logic here
-    sg.popup("Employee management functionality not implemented yet.")
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    def refresh_employee_list():
+        cursor.execute("SELECT id, name FROM employees")
+        return cursor.fetchall()
+
+    employees = refresh_employee_list()
+    
+    layout = [
+        [sg.Text("Manage Employees", font=('Helvetica', 20))],
+        [sg.Table(values=employees, headings=['ID', 'Name'], auto_size_columns=False, col_widths=[10, 20], justification='left', key='-TABLE-')],
+        [sg.Input(key='-EMP_ID-', size=(10, 1), default_text='ID'),
+         sg.Input(key='-EMP_NAME-', size=(20, 1), default_text='Name'),
+         sg.Input(key='-EMP_PASS-', size=(20, 1), default_text='Password')],
+        [sg.Button("Add Employee"), sg.Button("Remove Employee"), sg.Button("Back")]
+    ]
+    window = sg.Window("Manage Employees", layout)
+    
+    while True:
+          event, values = window.read()
+          if event == sg.WINDOW_CLOSED or event == 'Back':
+              break
+          elif event == "Add Employee":
+              if values['-EMP_ID-'] and values['-EMP_NAME-'] and values['-EMP_PASS-']:
+                  cursor.execute("INSERT OR IGNORE INTO employees (id, name, password) VALUES (?, ?, ?)",
+                               (values['-EMP_ID-'], values['-EMP_NAME-'], hashlib.sha256(values['-EMP_PASS-'].encode()).hexdigest()))
+                  conn.commit()
+                  employees = refresh_employee_list()
+                  window['-TABLE-'].update(values=employees)
+          elif event == "Remove Employee":
+              if values['-TABLE-']:
+                  selected_employee = employees[values['-TABLE-'][0]]
+                  cursor.execute("DELETE FROM employees WHERE id = ?", (selected_employee[0],))
+                  conn.commit()
+                  employees = refresh_employee_list()
+                  window['-TABLE-'].update(values=employees)
+    
+    window.close()
+    conn.close()
 
 def manage_fuel_types():
-    # Implement fuel type management logic here
-    sg.popup("Fuel type management functionality not implemented yet.")
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    def refresh_fuel_types():
+        cursor.execute("SELECT name, price, stock FROM fuel_types")
+        return cursor.fetchall()
+
+    fuel_types = refresh_fuel_types()
+    
+    layout = [
+        [sg.Text("Manage Fuel Types", font=('Helvetica', 20))],
+        [sg.Table(values=fuel_types, headings=['Name', 'Price', 'Stock'], auto_size_columns=False, col_widths=[15, 10, 10], justification='left', key='-TABLE-')],
+        [sg.Input(key='-FUEL_NAME-', size=(15, 1), default_text='Fuel Name'),
+         sg.Input(key='-FUEL_PRICE-', size=(10, 1), default_text='Price'),
+         sg.Input(key='-FUEL_STOCK-', size=(10, 1), default_text='Stock')],
+        [sg.Button("Add Fuel Type"), sg.Button("Update Price"), sg.Button("Update Stock"), sg.Button("Remove Fuel Type"), sg.Button("Back")]
+    ]
+    
+    window = sg.Window("Manage Fuel Types", layout)
+    
+    while True:
+        event, values = window.read()
+        if event == sg.WINDOW_CLOSED or event == 'Back':
+            break
+        elif event == "Add Fuel Type":
+            if values['-FUEL_NAME-'] and values['-FUEL_PRICE-'] and values['-FUEL_STOCK-']:
+                cursor.execute("INSERT OR IGNORE INTO fuel_types (name, price, stock) VALUES (?, ?, ?)",
+                               (values['-FUEL_NAME-'], float(values['-FUEL_PRICE-']), float(values['-FUEL_STOCK-'])))
+                conn.commit()
+                fuel_types = refresh_fuel_types()
+                window['-TABLE-'].update(values=fuel_types)
+        elif event == "Update Price":
+            if values['-TABLE-'] and values['-FUEL_PRICE-']:
+                selected_fuel = fuel_types[values['-TABLE-'][0]]
+                cursor.execute("UPDATE fuel_types SET price = ? WHERE name = ?",
+                               (float(values['-FUEL_PRICE-']), selected_fuel[0]))
+                conn.commit()
+                fuel_types = refresh_fuel_types()
+                window['-TABLE-'].update(values=fuel_types)
+        elif event == "Update Stock":
+            if values['-TABLE-'] and values['-FUEL_STOCK-']:
+                selected_fuel = fuel_types[values['-TABLE-'][0]]
+                cursor.execute("UPDATE fuel_types SET stock = ? WHERE name = ?",
+                               (float(values['-FUEL_STOCK-']), selected_fuel[0]))
+                conn.commit()
+                fuel_types = refresh_fuel_types()
+                window['-TABLE-'].update(values=fuel_types)
+        elif event == "Remove Fuel Type":
+            if values['-TABLE-']:
+                selected_fuel = fuel_types[values['-TABLE-'][0]]
+                cursor.execute("DELETE FROM fuel_types WHERE name = ?", (selected_fuel[0],))
+                conn.commit()
+                fuel_types = refresh_fuel_types()
+                window['-TABLE-'].update(values=fuel_types)
+    
+    window.close()
+    conn.close()
 
 def view_all_transactions():
-    # Implement transaction viewing logic here
-    sg.popup("Transaction viewing functionality not implemented yet.")
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT t.id, e.name, ft.name, t.amount, t.liters, t.timestamp
+        FROM transactions t
+        JOIN employees e ON t.employee_id = e.id
+        JOIN fuel_types ft ON t.fuel_type_id = ft.id
+        ORDER BY t.timestamp DESC
+    """)
+    transactions = cursor.fetchall()
+    
+    layout = [
+        [sg.Text("All Transactions", font=('Helvetica', 20))],
+        [sg.Table(values=transactions, headings=['ID', 'Employee', 'Fuel Type', 'Amount', 'Liters', 'Timestamp'], 
+                  auto_size_columns=False, col_widths=[5, 15, 10, 10, 10, 20], justification='left', key='-TABLE-')],
+        [sg.Button("Back")]
+    ]
+    
+    window = sg.Window("All Transactions", layout, size=(800, 600))
+    
+    while True:
+        event, values = window.read()
+        if event == sg.WINDOW_CLOSED or event == 'Back':
+            break
+    
+    window.close()
+    conn.close()
+
+def worker_tracking():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT e.id, e.name, 
+               COUNT(t.id) as transaction_count, 
+               SUM(t.amount) as total_sales,
+               AVG(t.amount) as avg_sale,
+               MAX(t.timestamp) as last_transaction
+        FROM employees e
+        LEFT JOIN transactions t ON e.id = t.employee_id
+        GROUP BY e.id
+        ORDER BY total_sales DESC
+    """)
+    worker_stats = cursor.fetchall()
+    
+    layout = [
+        [sg.Text("Worker Performance Tracking", font=('Helvetica', 20))],
+        [sg.Table(values=worker_stats, 
+                  headings=['ID', 'Employee', 'Transactions', 'Total Sales', 'Avg Sale', 'Last Transaction'], 
+                  auto_size_columns=False, 
+                  col_widths=[5, 20, 15, 15, 15, 20],
+                  justification='left',
+                  key='-TABLE-',
+                  enable_events=True)],
+        [sg.Button("View Performance Graph"), sg.Button("Export to CSV"), sg.Button("Back")]
+    ]
+    
+    window = sg.Window("Worker Tracking", layout, size=(800, 600))
+    
+    while True:
+        event, values = window.read()
+        if event == sg.WINDOW_CLOSED or event == 'Back':
+            break
+        elif event == "View Performance Graph":
+            plot_worker_performance(worker_stats)
+        elif event == "Export to CSV":
+            export_to_csv(worker_stats)
+    
+    window.close()
+    conn.close()
+
+def plot_worker_performance(worker_stats):
+    names = [stat[1] for stat in worker_stats]
+    sales = [stat[3] if stat[3] is not None else 0 for stat in worker_stats]
+    
+    plt.figure(figsize=(10, 6))
+    plt.bar(names, sales)
+    plt.title('Worker Sales Performance')
+    plt.xlabel('Employees')
+    plt.ylabel('Total Sales')
+    plt.xticks(rotation=45)
+    
+    buf = BytesIO()
+    plt.savefig(buf, format="png")
+    buf.seek(0)
+    
+    layout = [[sg.Image(data=buf.getvalue())]]
+    window = sg.Window("Performance Graph", layout)
+    window.read(close=True)
+def export_to_csv(data):
+    filename = f"worker_stats_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    with open(filename, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['ID', 'Employee', 'Transactions', 'Total Sales', 'Avg Sale', 'Last Transaction'])
+        writer.writerows(data)
+    sg.popup(f"Data exported to {filename}")
+  
+def admin_main():
+      window = create_admin_ui()
+    
+      while True:
+          event, _ = window.read()
+          if event == sg.WINDOW_CLOSED or event == 'Exit':
+             break
+          elif event == 'Manage Employees':
+              manage_employees()
+          elif event == 'Manage Fuel Types':
+              manage_fuel_types()
+          elif event == 'View All Transactions':
+              view_all_transactions()
+          elif event == 'Worker Tracking':
+              worker_tracking()
+    
+      window.close()
+      main()
+
+def admin_update_prices():
+    prices = load_fuel_prices()
+    layout = [
+        [sg.Text(f"{fuel}: ", size=(10, 1)), sg.Input(price, key=f'-{fuel.upper()}-')] for fuel, price in prices.items()
+    ]
+    layout.append([sg.Button('Update'), sg.Button('Cancel')])
+    
+    window = sg.Window('Update Fuel Prices', layout)
+    
+    while True:
+        event, values = window.read()
+        if event in (sg.WINDOW_CLOSED, 'Cancel'):
+            break
+        if event == 'Update':
+            new_prices = {fuel: float(values[f'-{fuel.upper()}-']) for fuel in prices}
+            save_fuel_prices(new_prices)
+            update_fuel_prices()
+            sg.popup('Prices updated successfully')
+            break
+    
+    window.close()
+    
+def worker_tracking():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        SELECT e.id, e.name, 
+               COUNT(t.id) as transaction_count, 
+               SUM(t.amount) as total_sales,
+               AVG(t.amount) as avg_sale,
+               MAX(t.timestamp) as last_transaction
+        FROM employees e
+        LEFT JOIN transactions t ON e.id = t.employee_id
+        GROUP BY e.id
+        ORDER BY total_sales DESC
+    """)
+    worker_stats = cursor.fetchall()
+    
+    layout = [
+        [sg.Text("Worker Performance Tracking", font=('Helvetica', 20))],
+        [sg.Table(values=worker_stats, 
+                  headings=['ID', 'Employee', 'Transactions', 'Total Sales', 'Avg Sale', 'Last Transaction'], 
+                  auto_size_columns=False, 
+                  col_widths=[5, 20, 15, 15, 15, 20],
+                  justification='left',
+                  key='-TABLE-',
+                  enable_events=True)],
+        [sg.Button("View Performance Graph"), sg.Button("Export to CSV"), sg.Button("Back")]
+    ]
+    
+    window = sg.Window("Worker Tracking", layout, size=(800, 600))
+    
+    while True:
+        event, values = window.read()
+        if event == sg.WINDOW_CLOSED or event == 'Back':
+            break
+        elif event == "View Performance Graph":
+            plot_worker_performance(worker_stats)
+        elif event == "Export to CSV":
+            export_to_csv(worker_stats)
+    
+    window.close()
+    conn.close()
+  
+def create_admin_ui():  
+      sg.theme('DarkBlue13')
+    
+      layout = [
+          [sg.Text('Admin Panel', font=('Helvetica', 24), pad=(0, 20))],
+          [sg.Button('Manage Employees', size=(20, 1), button_color=('white', '#007BFF'), border_width=0),
+         sg.Button('Manage Fuel Types', size=(20, 1), button_color=('white', '#28A745'), border_width=0)],
+          [sg.Button('View All Transactions', size=(20, 1), button_color=('white', '#FFC107'), border_width=0),
+         sg.Button('Worker Tracking', size=(20, 1), button_color=('white', '#17A2B8'), border_width=0)],
+         [sg.Button('Update Prices', size=(20, 1), button_color=('white', '#DC3545'), border_width=0),
+         sg.Button('View Reports', size=(20, 1), button_color=('white', '#6C757D'), border_width=0)],
+          [sg.Button('Exit', size=(20, 1), button_color=('white', '#DC3545'), border_width=0)]
+      ]
+    
+      return sg.Window('Admin Panel', layout, finalize=True, element_justification='center', font=('Helvetica', 12), size=(500, 300))
 
 def main():
     setup_database()
@@ -275,52 +662,47 @@ def main():
     
     window.close()
 
-
 def employee_main():
     window = create_advanced_ui()
+    fueling_in_progress = False
+    fuel_amount = 0
+    selected_fuel = None
     
     while True:
-        event, values = window.read()
+        event, values = window.read(timeout=100)
         if event == sg.WINDOW_CLOSED or event == 'Exit':
             break
-        elif event == 'Start Fueling':
-            employee_id = values['-ID-']
-            password = values['-PASSWORD-']
-            amount = values['-AMOUNT-']
-            
-            if not employee_id or not password or not amount:
-                sg.popup('Please fill in all fields', font=('Helvetica', 12))
-                continue
-            
-            try:
-                employee_id = int(employee_id)
-                amount = Decimal(amount)
-            except ValueError:
-                sg.popup('Employee ID and Amount must be numeric', font=('Helvetica', 12))
-                continue
-            
-            if authenticate_user(employee_id, password):
-                fuel_type = next(fuel for fuel in get_fuel_types() if values[f'-{fuel.upper()}-'])
-                
-                window.hide()
-                invoice, error = process_transaction(employee_id, fuel_type, amount)
-                if error:
-                    sg.popup_error(error, font=('Helvetica', 12))
-                else:
-                    sg.popup_scrolled(invoice, title='Transaction Complete', font=('Helvetica', 12))
-                window.un_hide()
-            else:
-                sg.popup('Authentication Failed', font=('Helvetica', 12))
         elif event == 'View Reports':
-            total_sales, chart_image = generate_reports()
-            sg.popup_scrolled(total_sales, image=chart_image.getvalue(), title='Sales Report', font=('Helvetica', 12))
+            view_reports()
         elif event == 'Update Prices':
+            update_fuel_prices()
+        elif event == 'Start Fueling':
             if update_fuel_prices():
-                window.close()
-                window = create_advanced_ui()
-                sg.popup('Fuel prices updated successfully', font=('Helvetica', 12))
+                sg.popup("Fuel prices updated successfully!")
             else:
-                sg.popup_error('Failed to update fuel prices', font=('Helvetica', 12))
+                sg.popup_error("Failed to update fuel prices.")
+            if authenticate_user(values['-ID-'], values['-PASSWORD-']):
+                selected_fuel = next((fuel for fuel in ['REGULAR', 'PREMIUM', 'DIESEL'] if values[f'-{fuel}-']), None)
+                if selected_fuel and values['-AMOUNT-']:
+                    try:
+                        fuel_amount = float(values['-AMOUNT-'])
+                        window['-STATUS-'].update("Authentication successful. Press Enter to start fueling.")
+                        fueling_in_progress = True
+                    except ValueError:
+                        sg.popup_error("Invalid amount entered.")
+            else:
+                sg.popup_error("Authentication failed.")
+        elif event == '\r' and fueling_in_progress:  # '\r' is the Enter key
+            result, error = process_transaction(values['-ID-'], selected_fuel.capitalize(), fuel_amount)
+            if error:
+                sg.popup_error(error)
+            else:
+                sg.popup(result)
+            fueling_in_progress = False
+            window['-STATUS-'].update("Fueling complete. Ready for next transaction.")
+        
+        if fueling_in_progress:
+            window['-STATUS-'].update("Ready to fuel. Press Enter to start pumping.")
     
     window.close()
 
@@ -358,13 +740,19 @@ def admin_main():
     while True:
         event, _ = window.read()
         if event == sg.WINDOW_CLOSED or event == 'Exit':
-             break
+            break
         elif event == 'Manage Employees':
             manage_employees()
         elif event == 'Manage Fuel Types':
             manage_fuel_types()
         elif event == 'View All Transactions':
             view_all_transactions()
+        elif event == 'Worker Tracking':
+            worker_tracking()
+        elif event == 'Update Prices':
+            admin_update_prices()
+        elif event == 'View Reports':
+            view_reports()
     
     window.close()
     main()
